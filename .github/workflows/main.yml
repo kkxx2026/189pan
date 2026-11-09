@@ -41,10 +41,52 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go
+      - name: Build cloudpan189-go (v7：含登录参数抓取补丁)
         run: |
+          set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
           cd "$RUNNER_TEMP/cloudpan-src"
+          # --- v7 补丁：cloudpan189-api v0.1.0 里两个登录参数刮取器共 10 处
+          # re.FindStringSubmatch(content)[1] 无任何保护：电信页面偶发返回缺字段的
+          # 变体时正则空匹配，程序当场崩溃（panic: index out of range [1] with length 0），
+          # 与登录抖动、签到崩溃是同一根源。在此 clone 审计过的 v0.1.0 源码、就地给
+          # 每一处加长度保护：抓到才赋值，抓不到留空，后续流程干净失败而不是崩溃。
+          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/app_login.go"
+          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/login.go"
+          GOMODCACHE="$(go env GOMODCACHE)"
+          LIBDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/cloudpan"
+          if [ ! -d "$LIBDIR" ]; then go mod download github.com/tickstep/cloudpan189-api; fi
+          [ -d "$LIBDIR" ] || { echo "❌ 找不到 cloudpan189-api v0.1.0 源码目录，补丁中止"; exit 1; }
+          chmod -R u+w "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
+          cp "$RUNNER_TEMP/app_login.go" "$LIBDIR/app_login.go"
+          cp "$RUNNER_TEMP/login.go" "$LIBDIR/login.go"
+          python3 - "$LIBDIR/app_login.go" 6 "$LIBDIR/login.go" 4 <<'PYEOF'
+          import re, sys
+          args = sys.argv[1:]
+          PAT = re.compile(r'^\tparams\.(\w+) = re\.FindStringSubmatch\(content\)\[1\]$')
+          for i in range(0, len(args), 2):
+              path, expect = args[i], int(args[i+1])
+              out, n = [], 0
+              for line in open(path).read().split('\n'):
+                  m = PAT.match(line)
+                  if m:
+                      f = m.group(1)
+                      out.append('\tif m := re.FindStringSubmatch(content); len(m) > 1 {')
+                      out.append('\t\tparams.%s = m[1]' % f)
+                      out.append('\t}')
+                      n += 1
+                  else:
+                      out.append(line)
+              if n != expect:
+                  sys.exit('%s: 预期补丁 %d 处，实际 %d 处，中止' % (path, expect, n))
+              open(path, 'w').write('\n'.join(out))
+              print('%s: 已加保护 %d 处' % (path, n))
+          PYEOF
+          if grep -rn "FindStringSubmatch(content)\[1\]" "$LIBDIR/app_login.go" "$LIBDIR/login.go" > /dev/null; then
+            echo "❌ 仍有未加保护的抓取，补丁不完整，中止"
+            exit 1
+          fi
+          echo "✅ 登录参数抓取补丁已全部应用（app_login.go 6 处 + login.go 4 处）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
@@ -58,11 +100,9 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录 + 签到 + 抽奖（v6：login 与 sign 必须在同一次 login 的进程内状态上衔接——
-          # 实测跨进程时 sign 读到的永远是空配置（「未登录账号」）；本版先用一次带探头的 login 验明登录，
-          # 成功后立刻重放同一条链 login && sign。链内 login 的参数抓取偶发空匹配即崩
-          # （panic: index out of range [1] with length 0，appGetLoginParams 的正则无保护），
-          # 故整条链最多重试 3 次，任一次拿到签到结果即停）
+          # 登录 + 签到 + 抽奖（v7：沿用 v6 的链式调用与整链重试 3 次；
+          # 本版真正的修复在 Build 步骤——给库的 10 处登录参数抓取加了空匹配保护，
+          # 电信页面缺字段时不再 panic 崩溃，抓不到参数就干净地走登录失败/重试）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
           : > "$CHAIN_LOG"
           LOGIN_OK=false
