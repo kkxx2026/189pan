@@ -1,4 +1,4 @@
-# 天翼云盘自动签到
+# 天翼云盘自动签到（Go 客户端引擎：cloudpan189-go）
 name: 天翼云盘签到
 
 on:
@@ -36,21 +36,54 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          go-version: '1.21'
 
-      - name: Install dependencies
+      - name: Build cloudpan189-go
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
+          cd "$RUNNER_TEMP/cloudpan-src"
+          go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
         id: checkin
+        env:
+          TYYP_USERNAME: ${{ secrets.TYYP_USERNAME }}
+          TYYP_PSW: ${{ secrets.TYYP_PSW }}
+          CLOUD189_CONFIG_DIR: ${{ runner.temp }}/cloud189-config
         run: |
-          # 执行签到并生成页面
+          START_TS=$(date +%s)
+          START_STR=$(date '+%Y-%m-%d %H:%M:%S')
+          BIN="$RUNNER_TEMP/cloudpan189-go"
+
+          # 登录（输出只进临时日志，不进公开记录——登录输出含账号昵称）
+          "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
+          if grep -q "登录成功" "$RUNNER_TEMP/login.log"; then
+            LOGIN_STATUS="登录成功"
+          else
+            LOGIN_STATUS="登录失败"
+          fi
+
+          # 签到 + 抽奖
+          SIGN_RESULT=""
+          DRAW1=""
+          DRAW2=""
+          if [ "$LOGIN_STATUS" = "登录成功" ]; then
+            "$BIN" sign > "$RUNNER_TEMP/sign.log" 2>&1 || true
+            SIGN_RESULT=$(grep -E "签到成功|今日已签到|签到失败" "$RUNNER_TEMP/sign.log" | head -n 1)
+            if [ -z "$SIGN_RESULT" ]; then
+              SIGN_RESULT="签到失败（无输出）"
+            fi
+            DRAW1=$(grep -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
+            DRAW2=$(grep -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
+          fi
+
+          END_TS=$(date +%s)
+          END_STR=$(date '+%Y-%m-%d %H:%M:%S')
+          DURATION=$((END_TS - START_TS))
+
           {
             echo "# 天翼云盘签到记录"
             echo ""
@@ -67,18 +100,41 @@ jobs:
             echo ""
             echo "## 签到详情"
             echo ""
-            python3 ./main.py 2>&1 || echo "签到脚本执行出错"
+            echo "# 天翼云盘自动签到抽奖程序"
+            echo ""
+            echo "## 执行概览"
+            echo "- **启动时间**: $START_STR"
+            echo "- **账户数量**: 1 个"
+            echo ""
+            echo "## 账户1"
+            echo ""
+            echo "### 执行结果"
+            echo "- **登录状态**: $LOGIN_STATUS"
+            echo "- **签到结果**: $SIGN_RESULT"
+            if [ -n "$DRAW1" ] || [ -n "$DRAW2" ]; then
+              echo "- **抽奖结果**:"
+              if [ -n "$DRAW1" ]; then
+                echo "  - $DRAW1"
+              fi
+              if [ -n "$DRAW2" ]; then
+                echo "  - $DRAW2"
+              fi
+            fi
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 执行统计"
+            echo "- **结束时间**: $END_STR"
+            echo "- **运行时长**: ${DURATION} 秒"
+            echo ""
+            echo "✅ **所有账户处理完成！**"
           } | tee index.md
-          
-          # 检查签到是否成功（检查输出中是否包含成功标识）
-          if grep -q "所有账户处理完成" index.md; then
+
+          if echo "$SIGN_RESULT" | grep -qE "签到成功|今日已签到"; then
             echo "success=true" >> $GITHUB_OUTPUT
           else
             echo "success=false" >> $GITHUB_OUTPUT
           fi
-        env:
-          TYYP_USERNAME: ${{ secrets.TYYP_USERNAME }}
-          TYYP_PSW: ${{ secrets.TYYP_PSW }}
 
       - name: Set commit message
         id: commit_msg
