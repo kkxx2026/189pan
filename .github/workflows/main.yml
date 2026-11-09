@@ -58,9 +58,11 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录 + 签到 + 抽奖（v4：三条命令必须在同一次进程调用里链式执行——login 与 sign 是各自独立的进程，
-          # 登录状态只存在于 login 那次运行内，拆成两次调用时 sign 读到的永远是空配置（实测「未登录账号」）；
-          # && 链保证只有真登录成功后才执行 sign；整条链的输出进同一份日志，仍只进临时日志不进公开记录）
+          # 登录 + 签到 + 抽奖（v6：login 与 sign 必须在同一次 login 的进程内状态上衔接——
+          # 实测跨进程时 sign 读到的永远是空配置（「未登录账号」）；本版先用一次带探头的 login 验明登录，
+          # 成功后立刻重放同一条链 login && sign。链内 login 的参数抓取偶发空匹配即崩
+          # （panic: index out of range [1] with length 0，appGetLoginParams 的正则无保护），
+          # 故整条链最多重试 3 次，任一次拿到签到结果即停）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
           : > "$CHAIN_LOG"
           LOGIN_OK=false
@@ -74,7 +76,13 @@ jobs:
           done
           if [ "$LOGIN_OK" = "true" ]; then
             LOGIN_STATUS="登录成功"
-            "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && "$BIN" sign >> "$CHAIN_LOG" 2>&1 || true
+            for attempt in 1 2 3; do
+              "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && "$BIN" sign >> "$CHAIN_LOG" 2>&1 || true
+              if grep -a -q -E "签到成功|今日已签到|签到失败" "$CHAIN_LOG"; then
+                break
+              fi
+              sleep 5
+            done
           else
             LOGIN_STATUS="登录失败"
           fi
