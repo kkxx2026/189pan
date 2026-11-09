@@ -41,16 +41,20 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v7：含登录参数抓取补丁)
+      - name: Build cloudpan189-go (v8：登录链三层补丁)
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
           cd "$RUNNER_TEMP/cloudpan-src"
-          # --- v7 补丁：cloudpan189-api v0.1.0 里两个登录参数刮取器共 10 处
-          # re.FindStringSubmatch(content)[1] 无任何保护：电信页面偶发返回缺字段的
-          # 变体时正则空匹配，程序当场崩溃（panic: index out of range [1] with length 0），
-          # 与登录抖动、签到崩溃是同一根源。在此 clone 审计过的 v0.1.0 源码、就地给
-          # 每一处加长度保护：抓到才赋值，抓不到留空，后续流程干净失败而不是崩溃。
+          # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
+          # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
+          #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
+          # 第二层（v8 新增）：login.go 的 LoginWithCaptcha 在 doLoginAct 返回
+          #   (nil 结果, nil 错误) 时 err.Error() 解引用空指针崩溃 → 先判 err、
+          #   再单独判结果为空，改为干净返回登录失败。
+          # 第三层（v8 新增）：appGetLoginParams 整体加 recover 兜底 + 必需字段
+          #   （jRsaKey/Lt/ReturnUrl/ParamId/ReqId）缺一即返回「登录参数不完整」错误，
+          #   不再带着空参数往下走、把小问题拖成崩溃。
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/app_login.go"
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/login.go"
           GOMODCACHE="$(go env GOMODCACHE)"
@@ -81,12 +85,37 @@ jobs:
                   sys.exit('%s: 预期补丁 %d 处，实际 %d 处，中止' % (path, expect, n))
               open(path, 'w').write('\n'.join(out))
               print('%s: 已加保护 %d 处' % (path, n))
+          # ---- v8 第二层：LoginWithCaptcha 空指针守卫（login.go）----
+          login_path = args[2]
+          src = open(login_path).read()
+          old = '\tr, err := doLoginAct(username, password, captchaCode, latestLoginParams.CaptchaToken,\n\t\tlatestLoginParams.ReturnUrl, latestLoginParams.ParamId, latestLoginParams.Lt)\n\tif err != nil || r.Msg != "登录成功" {\n\t\tlogger.Verboseln("login failed ", err)\n\t\treturn webToken, apierror.NewFailedApiError(err.Error())\n\t}'
+          new = '\tr, err := doLoginAct(username, password, captchaCode, latestLoginParams.CaptchaToken,\n\t\tlatestLoginParams.ReturnUrl, latestLoginParams.ParamId, latestLoginParams.Lt)\n\tif err != nil {\n\t\tlogger.Verboseln("login failed ", err)\n\t\treturn webToken, apierror.NewFailedApiError(err.Error())\n\t}\n\tif r == nil || r.Msg != "登录成功" {\n\t\tlogger.Verboseln("login failed: unexpected result")\n\t\treturn webToken, apierror.NewFailedApiError("登录失败")\n\t}'
+          if src.count(old) != 1:
+              sys.exit('login.go: 空指针守卫锚点未命中，中止')
+          open(login_path, 'w').write(src.replace(old, new))
+          print('login.go: 空指针守卫已应用')
+          # ---- v8 第三层：appGetLoginParams recover + 必需字段校验（app_login.go）----
+          app_path = args[0]
+          src = open(app_path).read()
+          anchor = '\tcontent := string(data)\n\n\tre, _ := regexp.Compile("captchaToken\' value=\'(.+?)\'")'
+          repl = '\tcontent := string(data)\n\tdefer func() {\n\t\tif rec := recover(); rec != nil {\n\t\t\tparams = appLoginParams{}\n\t\t\terror = apierror.NewFailedApiError("登录参数抓取异常")\n\t\t}\n\t}()\n\n\tre, _ := regexp.Compile("captchaToken\' value=\'(.+?)\'")'
+          if src.count(anchor) != 1:
+              sys.exit('app_login.go: recover 锚点未命中，中止')
+          src = src.replace(anchor, repl)
+          tail = '\tparams.jRsaKey = m[1]\n\t}\n\treturn\n}'
+          tail_new = '\tparams.jRsaKey = m[1]\n\t}\n\tif params.jRsaKey == "" || params.Lt == "" || params.ReturnUrl == "" || params.ParamId == "" || params.ReqId == "" {\n\t\treturn params, apierror.NewFailedApiError("登录参数不完整")\n\t}\n\treturn\n}'
+          if src.count(tail) != 1:
+              sys.exit('app_login.go: 字段校验锚点未命中，中止')
+          open(app_path, 'w').write(src.replace(tail, tail_new))
+          print('app_login.go: recover 兜底 + 必需字段校验已应用')
           PYEOF
           if grep -rn "FindStringSubmatch(content)\[1\]" "$LIBDIR/app_login.go" "$LIBDIR/login.go" > /dev/null; then
             echo "❌ 仍有未加保护的抓取，补丁不完整，中止"
             exit 1
           fi
-          echo "✅ 登录参数抓取补丁已全部应用（app_login.go 6 处 + login.go 4 处）"
+          grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
+          grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
+          echo "✅ 登录链三层补丁已全部应用（抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
@@ -100,9 +129,10 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录 + 签到 + 抽奖（v7：沿用 v6 的链式调用与整链重试 3 次；
-          # 本版真正的修复在 Build 步骤——给库的 10 处登录参数抓取加了空匹配保护，
-          # 电信页面缺字段时不再 panic 崩溃，抓不到参数就干净地走登录失败/重试）
+          # 登录 + 签到 + 抽奖（v8：沿用 v6 的链式调用与整链重试 3 次；
+          # 修复都在 Build 步骤的三层补丁里——抓取加保护、空指针加守卫、
+          # 参数抓取加 recover 与必需字段校验，目标是登录链再不 panic，
+          # 抓不到参数就干净地失败并重试）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
           : > "$CHAIN_LOG"
           LOGIN_OK=false
