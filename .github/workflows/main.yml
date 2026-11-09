@@ -58,18 +58,28 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录（调试模式：打开详细日志，失败时提取电信返回的原因）
-          # 日志只进临时文件；打印到步骤日志时会打码长串与长数字，登录成功时的昵称行不会出现在这里
-          # 实测登录偶有抖动（同一配置一趟失败一趟成功），失败自动重试一次
-          LOGIN_STATUS="登录失败"
+          # 登录 + 签到 + 抽奖（v4：三条命令必须在同一次进程调用里链式执行——login 与 sign 是各自独立的进程，
+          # 登录状态只存在于 login 那次运行内，拆成两次调用时 sign 读到的永远是空配置（实测「未登录账号」）；
+          # && 链保证只有真登录成功后才执行 sign；整条链的输出进同一份日志，仍只进临时日志不进公开记录）
+          CHAIN_LOG="$RUNNER_TEMP/chain.log"
+          : > "$CHAIN_LOG"
+          LOGIN_OK=false
           for attempt in 1 2; do
-            CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
-            if grep -q "登录成功" "$RUNNER_TEMP/login.log"; then
-              LOGIN_STATUS="登录成功"
+            CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$CHAIN_LOG" 2>&1 || true
+            if grep -q "登录成功" "$CHAIN_LOG"; then
+              LOGIN_OK=true
               break
             fi
             sleep 5
           done
+          if [ "$LOGIN_OK" = "true" ]; then
+            LOGIN_STATUS="登录成功"
+            "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && "$BIN" sign >> "$CHAIN_LOG" 2>&1 || true
+          else
+            LOGIN_STATUS="登录失败"
+          fi
+          cp "$CHAIN_LOG" "$RUNNER_TEMP/login.log"
+          cp "$CHAIN_LOG" "$RUNNER_TEMP/sign.log"
           LOGIN_REASON=""
           if [ "$LOGIN_STATUS" = "登录失败" ]; then
             LOGIN_REASON=$(grep -a -E "panic:|APP登录失败|loginResult|登录失败" "$RUNNER_TEMP/login.log" | tail -2 | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
@@ -78,20 +88,14 @@ jobs:
             echo "---------------------------------------------"
           fi
 
-          # 签到 + 抽奖（无结果时自动重试一次；仍无结果则把打码后的原始输出写进记录备查）
+          # 签到结果提取（v4：签到已在上面的链式调用里执行完，这里只从链日志里提取结果行；
+          # 「未登录账号」视为链断裂的异常信号，原样记进签到输出备查）
           SIGN_RESULT=""
           SIGN_DETAIL=""
           DRAW1=""
           DRAW2=""
           if [ "$LOGIN_STATUS" = "登录成功" ]; then
-            for attempt in 1 2; do
-              "$BIN" sign > "$RUNNER_TEMP/sign.log" 2>&1 || true
-              SIGN_RESULT=$(grep -a -E "签到成功|今日已签到|签到失败" "$RUNNER_TEMP/sign.log" | head -n 1)
-              if [ -n "$SIGN_RESULT" ]; then
-                break
-              fi
-              sleep 5
-            done
+            SIGN_RESULT=$(grep -a -E "签到成功|今日已签到|签到失败" "$RUNNER_TEMP/sign.log" | head -n 1)
             echo "----- 签到输出（已打码，末尾10行） -----"
             tail -10 "$RUNNER_TEMP/sign.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g'
             echo "-----------------------------------------"
