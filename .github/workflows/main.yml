@@ -58,12 +58,18 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录（输出只进临时日志，不进公开记录——登录输出含账号昵称）
-          "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
+          # 登录（调试模式：打开详细日志，失败时提取电信返回的原因）
+          # 日志只进临时文件；打印到步骤日志时会打码长串与长数字，登录成功时的昵称行不会出现在这里
+          CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
+          LOGIN_REASON=""
           if grep -q "登录成功" "$RUNNER_TEMP/login.log"; then
             LOGIN_STATUS="登录成功"
           else
             LOGIN_STATUS="登录失败"
+            LOGIN_REASON=$(grep -a -E "panic:|APP登录失败|loginResult|登录失败" "$RUNNER_TEMP/login.log" | tail -2 | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
+            echo "----- 登录失败日志（已打码，末尾20行） -----"
+            tail -20 "$RUNNER_TEMP/login.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g'
+            echo "---------------------------------------------"
           fi
 
           # 签到 + 抽奖
@@ -110,6 +116,9 @@ jobs:
             echo ""
             echo "### 执行结果"
             echo "- **登录状态**: $LOGIN_STATUS"
+            if [ "$LOGIN_STATUS" = "登录失败" ] && [ -n "$LOGIN_REASON" ]; then
+              echo "- **失败原因**: $LOGIN_REASON"
+            fi
             echo "- **签到结果**: $SIGN_RESULT"
             if [ -n "$DRAW1" ] || [ -n "$DRAW2" ]; then
               echo "- **抽奖结果**:"
