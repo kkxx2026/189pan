@@ -101,7 +101,12 @@ jobs:
             echo "-----------------------------------------"
             if [ -z "$SIGN_RESULT" ]; then
               SIGN_RESULT="签到失败（无输出）"
-              SIGN_DETAIL=$(tail -5 "$RUNNER_TEMP/sign.log" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
+              PANIC_HEAD=$(grep -a -m1 -E "^panic:|^fatal error:" "$RUNNER_TEMP/sign.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
+              if [ -n "$PANIC_HEAD" ]; then
+                SIGN_DETAIL="$PANIC_HEAD"
+              else
+                SIGN_DETAIL=$(tail -5 "$RUNNER_TEMP/sign.log" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
+              fi
             fi
             DRAW1=$(grep -a -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
             DRAW2=$(grep -a -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
@@ -200,14 +205,4 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./
-          destination: ./_site
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+   
