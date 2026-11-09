@@ -60,30 +60,47 @@ jobs:
 
           # 登录（调试模式：打开详细日志，失败时提取电信返回的原因）
           # 日志只进临时文件；打印到步骤日志时会打码长串与长数字，登录成功时的昵称行不会出现在这里
-          CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
+          # 实测登录偶有抖动（同一配置一趟失败一趟成功），失败自动重试一次
+          LOGIN_STATUS="登录失败"
+          for attempt in 1 2; do
+            CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$RUNNER_TEMP/login.log" 2>&1 || true
+            if grep -q "登录成功" "$RUNNER_TEMP/login.log"; then
+              LOGIN_STATUS="登录成功"
+              break
+            fi
+            sleep 5
+          done
           LOGIN_REASON=""
-          if grep -q "登录成功" "$RUNNER_TEMP/login.log"; then
-            LOGIN_STATUS="登录成功"
-          else
-            LOGIN_STATUS="登录失败"
+          if [ "$LOGIN_STATUS" = "登录失败" ]; then
             LOGIN_REASON=$(grep -a -E "panic:|APP登录失败|loginResult|登录失败" "$RUNNER_TEMP/login.log" | tail -2 | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
             echo "----- 登录失败日志（已打码，末尾20行） -----"
             tail -20 "$RUNNER_TEMP/login.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g'
             echo "---------------------------------------------"
           fi
 
-          # 签到 + 抽奖
+          # 签到 + 抽奖（无结果时自动重试一次；仍无结果则把打码后的原始输出写进记录备查）
           SIGN_RESULT=""
+          SIGN_DETAIL=""
           DRAW1=""
           DRAW2=""
           if [ "$LOGIN_STATUS" = "登录成功" ]; then
-            "$BIN" sign > "$RUNNER_TEMP/sign.log" 2>&1 || true
-            SIGN_RESULT=$(grep -E "签到成功|今日已签到|签到失败" "$RUNNER_TEMP/sign.log" | head -n 1)
+            for attempt in 1 2; do
+              "$BIN" sign > "$RUNNER_TEMP/sign.log" 2>&1 || true
+              SIGN_RESULT=$(grep -a -E "签到成功|今日已签到|签到失败" "$RUNNER_TEMP/sign.log" | head -n 1)
+              if [ -n "$SIGN_RESULT" ]; then
+                break
+              fi
+              sleep 5
+            done
+            echo "----- 签到输出（已打码，末尾10行） -----"
+            tail -10 "$RUNNER_TEMP/sign.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g'
+            echo "-----------------------------------------"
             if [ -z "$SIGN_RESULT" ]; then
               SIGN_RESULT="签到失败（无输出）"
+              SIGN_DETAIL=$(tail -5 "$RUNNER_TEMP/sign.log" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-180)
             fi
-            DRAW1=$(grep -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
-            DRAW2=$(grep -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
+            DRAW1=$(grep -a -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
+            DRAW2=$(grep -a -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
           fi
 
           END_TS=$(date +%s)
@@ -120,6 +137,9 @@ jobs:
               echo "- **失败原因**: $LOGIN_REASON"
             fi
             echo "- **签到结果**: $SIGN_RESULT"
+            if [ -n "$SIGN_DETAIL" ]; then
+              echo "- **签到输出**: $SIGN_DETAIL"
+            fi
             if [ -n "$DRAW1" ] || [ -n "$DRAW2" ]; then
               echo "- **抽奖结果**:"
               if [ -n "$DRAW1" ]; then
