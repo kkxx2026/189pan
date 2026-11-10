@@ -41,11 +41,41 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v8：登录链三层补丁)
+      - name: Build cloudpan189-go (v9：登录恢复再补两处）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
           cd "$RUNNER_TEMP/cloudpan-src"
+          # ---- v9 新增：客户端源码两处补丁（对象：cloudpan189-go master 克隆件）
+          # 第 1 处：internal/config/pan_config.go 的 ActiveUser() 恢复用户时，
+          #   SetupUserByCookie 失败就判死刑（GetUserInfo 是网页接口，依赖网页 cookie，
+          #   在 Actions 里时好时坏）。改为：电脑客户端会话（SessionKey）仍在时，
+          #   直接以 app 会话恢复已存用户（UID/昵称保留），签到只用 SessionKey。
+          # 第 2 处：main.go 的 checkLoginExpiredAndRelogin() 原来每次调用都重登
+          #   （UID != 0 恒真），新登录会顶掉已存网页会话且其网页兜底本就时好时坏。
+          #   改为：只有确实没有可用用户时才重登；自动化流程里登录步骤已在签到前
+          #   刚刷新过会话，这里不再动它。
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" "$RUNNER_TEMP/cloudpan-src/main.go" <<'PYEOF2'
+          import sys
+          pan_path, main_path = sys.argv[1], sys.argv[2]
+          src = open(pan_path).read()
+          old_a = '\t\t\t\tif u.PanClient() == nil {\n\t\t\t\t\t// restore client\n\t\t\t\t\tuser, err := SetupUserByCookie(&u.WebToken, &u.AppToken)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\tlogger.Verboseln("setup user error")\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\tu.panClient = user.panClient\n\t\t\t\t\tu.Nickname = user.Nickname\n'
+          new_a = '\t\t\t\tif u.PanClient() == nil {\n\t\t\t\t\t// restore client\n\t\t\t\t\tuser, err := SetupUserByCookie(&u.WebToken, &u.AppToken)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t// 网页侧校验失败时，若电脑客户端会话仍在，直接以 app 会话恢复：\n\t\t\t\t\t\t// 签到只用 SessionKey，不依赖网页 cookie；这里返回已存的用户\n\t\t\t\t\t\t//（UID 与昵称都保留），而不是在恢复处就判死刑\n\t\t\t\t\t\tif u.AppToken.SessionKey != "" {\n\t\t\t\t\t\t\tlogger.Verboseln("setup user by cookie failed, restore with app session only")\n\t\t\t\t\t\t\tu.panClient = cloudpan.NewPanClient(u.WebToken, u.AppToken)\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tlogger.Verboseln("setup user error")\n\t\t\t\t\t\t\treturn nil\n\t\t\t\t\t\t}\n\t\t\t\t\t} else {\n\t\t\t\t\t\tu.panClient = user.panClient\n\t\t\t\t\t\tu.Nickname = user.Nickname\n\t\t\t\t\t}\n'
+          if src.count(old_a) != 1:
+              sys.exit('pan_config.go: 恢复兜底锚点未命中，中止')
+          open(pan_path, 'w').write(src.replace(old_a, new_a))
+          print('pan_config.go: 恢复兜底已应用')
+          src = open(main_path).read()
+          old_b = '\tactiveUser := config.Config.ActiveUser()\n\tif activeUser == nil || activeUser.UID != 0 {\n\t\t// maybe expired, try to login\n\t\tcmder.TryLogin()\n\t}\n'
+          new_b = '\tactiveUser := config.Config.ActiveUser()\n\tif activeUser == nil {\n\t\t// 只有确实没有可用用户时才重登：已存用户不要每次都重登——\n\t\t// 新登录会顶掉已存的网页会话，且其网页兜底本就时好时坏；\n\t\t// 自动化流程里登录步骤已在签到前刚刷新过会话，这里不再动它\n\t\tcmder.TryLogin()\n\t}\n'
+          if src.count(old_b) != 1:
+              sys.exit('main.go: 重登条件锚点未命中，中止')
+          open(main_path, 'w').write(src.replace(old_b, new_b))
+          print('main.go: 重登条件已收紧')
+          PYEOF2
+          grep -q 'restore with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" || { echo "❌ 恢复兜底缺失，中止"; exit 1; }
+          grep -q 'if activeUser == nil {' "$RUNNER_TEMP/cloudpan-src/main.go" || { echo "❌ 重登条件未收紧，中止"; exit 1; }
+          echo "✅ 客户端两处补丁已应用（恢复兜底 + 重登收紧）"
           # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
           # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
           #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
@@ -115,7 +145,7 @@ jobs:
           fi
           grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
           grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
-          echo "✅ 登录链三层补丁已全部应用（抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
+          echo "✅ v9 补丁已全部应用（客户端 2 处 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
@@ -129,10 +159,11 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录 + 签到 + 抽奖（v8：沿用 v6 的链式调用与整链重试 3 次；
-          # 修复都在 Build 步骤的三层补丁里——抓取加保护、空指针加守卫、
-          # 参数抓取加 recover 与必需字段校验，目标是登录链再不 panic，
-          # 抓不到参数就干净地失败并重试）
+          # 登录 + 签到 + 抽奖（v9：沿用 v6 的链式调用与整链重试 3 次；
+          # 修复都在 Build 步骤的补丁里——v7/v8 的抓取保护、空指针守卫、
+          # recover/字段校验不变；v9 再补两处：用户恢复时网页校验失败改走
+          # app 会话兜底、每次调用都重登改为仅无用户时重登，目标是签到
+          # 进程不再因「未登录账号」丢掉刚登录好的会话）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
           : > "$CHAIN_LOG"
           LOGIN_OK=false
