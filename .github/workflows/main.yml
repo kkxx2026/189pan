@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.1：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.2：登录不再依赖网页用户信息接口）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
@@ -288,6 +288,13 @@ jobs:
           chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
           go mod edit -replace github.com/tickstep/cloudpan189-api="$RUNNER_TEMP/cloudpan-src/apilocal"
           echo "✅ go.mod replace 已指向本地已补丁 api 源码"
+          # v14.1 复盘修正：replace 到本地目录后，apilocal/go.mod 里写着
+          # go 1.12 且自带 require 集合，与主模块（library-go v0.1.1）不一致，
+          # 默认 -mod=readonly 会直接拒绝构建。放开为 -mod=mod 并跑一遍
+          # go mod tidy，让依赖图现算现写；构建日志里也会留下完整轨迹。
+          export GOFLAGS=-mod=mod
+          go mod tidy
+          echo "✅ go mod tidy 完成（依赖图已按本地 replace 重算）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
