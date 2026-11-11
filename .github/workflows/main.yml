@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v13：客户端补丁不变，新增配置文件快照）
+      - name: Build cloudpan189-go (v14：登录不再依赖网页用户信息接口）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
@@ -86,10 +86,17 @@ jobs:
               sys.exit('pan_user.go: 详情关口锚点未命中，中止')
           open(user_path, 'w').write(src.replace(old_c, new_c))
           print('pan_user.go: 详情关口兜底已应用')
+          src = open(user_path).read()
+          if 'func (pu *PanUser) SetPanClient(' in src:
+              sys.exit('pan_user.go: SetPanClient 已存在，中止')
+          src += '\n// SetPanClient v14 追加：供登录命令在构造用户后注入客户端\nfunc (pu *PanUser) SetPanClient(client *cloudpan.PanClient) {\n\tpu.panClient = client\n}\n'
+          open(user_path, 'w').write(src)
+          print('pan_user.go: SetPanClient 已追加')
           PYEOF2
           grep -q 'restore with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" || { echo "❌ 恢复兜底缺失，中止"; exit 1; }
           grep -q 'if activeUser == nil {' "$RUNNER_TEMP/cloudpan-src/main.go" || { echo "❌ 重登条件未收紧，中止"; exit 1; }
           grep -q 'get user detail info failed, continue with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_user.go" || { echo "❌ 详情关口兜底缺失，中止"; exit 1; }
+          grep -q 'func (pu \*PanUser) SetPanClient(' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_user.go" || { echo "❌ SetPanClient 缺失，中止"; exit 1; }
           echo "✅ 客户端三处补丁已应用（恢复兜底 + 重登收紧 + 详情关口兜底）"
           # ---- 第 4 处（v12）：internal/command/user_sign.go 的 sign 动作开头加一行
           #   无条件打印的诊断标记（fmt.Printf，不受 verbose 开关影响）：
@@ -111,6 +118,44 @@ jobs:
           PYEOF3
           grep -q 'sign diag: users=' "$RUNNER_TEMP/cloudpan-src/internal/command/user_sign.go" || { echo "❌ 签到诊断标记缺失，中止"; exit 1; }
           echo "✅ v12 签到诊断标记已应用"
+          # ---- 第 5 处（v14）：internal/command/login.go 的 CmdLogin 动作——
+          #   #17 实证：探头登录打印「天翼帐号登录成功」后，配置文件仍是出厂
+          #   空状态（355 字节 users=0）。根源在登录动作后半截：RunLogin 拿到
+          #   app 会话后还要 SetupUserByCookie 走网页 getUserInfoForPortal 拿
+          #   UID——UID 来自该接口的 domainName 字段，现已不回此值（或回0），
+          #   于是 user.UID=0 → ActiveUID=0 → ActiveUser() 恒 nil → 保存被
+          #   跳过、内存用户也判「未登录」；链式那趟更死在网页兜底直登上。
+          #   改法：RunLogin 成功后，不再调 SetupUserByCookie，直接用 appToken
+          #   构造 PanClient，跳过网页用户信息/详情两关，UID 用固定非零占位
+          #   1890001（仅本地索引用，签到与抽奖都不读它），然后加密保存账密
+          #   并 SetActiveUser —— 登录落盘不再依赖任何网页接口。
+          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/pan_client.go" -o "$RUNNER_TEMP/pan_client.go.orig"
+          cp "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$RUNNER_TEMP/login_cmd.go.orig"
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$LIBDIR/pan_client.go" "$RUNNER_TEMP/login_cmd.go.orig" "$RUNNER_TEMP/pan_client.go.orig" <<'PYEOF4'
+          import sys
+          login_path, client_path, login_orig_path, client_orig_path = sys.argv[1:5]
+          if open(login_path).read() != open(login_orig_path).read():
+              sys.exit('login.go: 与已审计基线不一致，中止')
+          if open(client_path).read() != open(client_orig_path).read():
+              sys.exit('pan_client.go: 与 v0.1.0 已审计基线不一致，中止')
+          src = open(login_path).read()
+          old_block = '\t\t\tcloudUser, _ := config.SetupUserByCookie(&webToken, &appToken)\n\t\t\t// save username / password\n\t\t\tcloudUser.LoginUserName = config.EncryptString(username)\n\t\t\tcloudUser.LoginUserPassword = config.EncryptString(passowrd)\n\t\t\tconfig.Config.SetActiveUser(cloudUser)\n\t\t\tfmt.Println("天翼帐号登录成功: ", cloudUser.Nickname)\n'
+          new_block = '\t\t\t// v14: 不再走 SetupUserByCookie 的网页用户信息关口（UID 取自\n\t\t\t// getUserInfoForPortal 的 domainName，现已不回值，UID 恒 0 导致\n\t\t\t// 登录状态无法落盘）。直接以 app 会话构造用户：签到只用\n\t\t\t// SessionKey/SessionSecret，抽奖只用 CookieLoginUser，UID 仅作\n\t\t\t// 本地索引，用固定非零占位。\n\t\t\tcloudUser := &config.PanUser{\n\t\t\t\tUID: 1890001,\n\t\t\t\tNickname: username,\n\t\t\t\tAccountName: username,\n\t\t\t\tWebToken: webToken,\n\t\t\t\tAppToken: appToken,\n\t\t\t}\n\t\t\tcloudUser.SetPanClient(cloudpan.NewPanClient(webToken, appToken))\n\t\t\t// save username / password\n\t\t\tcloudUser.LoginUserName = config.EncryptString(username)\n\t\t\tcloudUser.LoginUserPassword = config.EncryptString(passowrd)\n\t\t\tconfig.Config.SetActiveUser(cloudUser)\n\t\t\tfmt.Println("天翼帐号登录成功: ", cloudUser.Nickname)\n'
+          if src.count(old_block) != 1:
+              sys.exit('login.go: v14 改造锚点未命中，中止')
+          open(login_path, 'w').write(src.replace(old_block, new_block))
+          print('login.go: v14 app 会话直构用户已应用')
+          csrc = open(client_path).read()
+          marker = 'func NewPanClient(webToken WebLoginToken, appToken AppLoginToken) *PanClient {'
+          if csrc.count(marker) != 1:
+              sys.exit('pan_client.go: NewPanClient 锚点未命中，中止')
+          add = marker + '\n\tclient.EnableAppSessionFallback()'
+          open(client_path, 'w').write(csrc.replace(marker, add))
+          print('pan_client.go: app 会话 cookie 兜底挂钩已应用')
+          PYEOF4
+          grep -q 'UID: 1890001' "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" || { echo "❌ v14 登录改造缺失，中止"; exit 1; }
+          grep -q 'EnableAppSessionFallback' "$LIBDIR/pan_client.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
+          echo "✅ v14 登录改造已应用（跳过网页用户信息关口，app 会话直构用户）"
           # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
           # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
           #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
@@ -181,6 +226,47 @@ jobs:
           grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
           grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
           echo "✅ 基线补丁已全部应用（客户端 3 处 + 签到诊断标记 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
+          # ---- 客户端补丁第 6 处（v14）：cloudpan189-api 的 pan_client.go 末尾追加
+          #   EnableAppSessionFallback —— NewPanClient 造的网页 client 原本只带
+          #   COOKIE_LOGIN_USER 一只 cookie；该值为空时（SSO 换 cookie 现已不稳），
+          #   用 app 会话（SessionKey）经 ssoLogin.action 换到 cookie 并塞回 jar，
+          #   仍为空则用 SessionKey 本身兜底。抽奖走网页 client 的 cookie 通道，
+          #   这是它在新登录形态下能工作的前提。补丁后把改过的 api 源码放进
+          #   克隆件内的本地目录，并用 go.mod replace 指向它——直接改模块缓存
+          #   会被 go 的校验和校验拒绝（v7–v13 的老补丁在缓存里的命运即将由
+          #   本版的构建结果验证：若构建因校验和失败，说明老路已断，本版的
+          #   replace 正是对策；若构建通过，replace 同样保证补丁必达）。
+          cat >> "$LIBDIR/pan_client.go" <<'GOEOF'
+
+          // EnableAppSessionFallback v14 追加：网页 client 的 cookie 为空时，
+          // 用 app 会话换取 COOKIE_LOGIN_USER 并塞回 cookie jar；换不到则以
+          // SessionKey 本身兜底，保证抽奖等网页接口至少带着会话去试。
+          func (p *PanClient) EnableAppSessionFallback() {
+              if p.webToken.CookieLoginUser != "" || p.appToken.SessionKey == "" {
+                  return
+              }
+              cookie := RefreshCookieToken(p.appToken.SessionKey)
+              if cookie == "" {
+                  cookie = p.appToken.SessionKey
+              }
+              p.webToken.CookieLoginUser = cookie
+              p.client.Jar.SetCookies(cloudpanDomainUrl, []*http.Cookie{
+                  &http.Cookie{
+                      Name:   "COOKIE_LOGIN_USER",
+                      Value:  cookie,
+                      Domain: "cloud.189.cn",
+                      Path:   "/",
+                  },
+              })
+          }
+          GOEOF
+          grep -q 'func (p \*PanClient) EnableAppSessionFallback' "$LIBDIR/pan_client.go" || { echo "❌ v14 cookie 兜底函数缺失，中止"; exit 1; }
+          echo "✅ v14 app 会话 cookie 兜底已应用"
+          mkdir -p "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp -r "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/." "$RUNNER_TEMP/cloudpan-src/apilocal/"
+          chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
+          go mod edit -replace github.com/tickstep/cloudpan189-api="$RUNNER_TEMP/cloudpan-src/apilocal"
+          echo "✅ go.mod replace 已指向本地已补丁 api 源码"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
