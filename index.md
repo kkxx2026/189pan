@@ -2,12 +2,12 @@
 
 [![签到状态](https://github.com/kkxx2026/189pan/actions/workflows/main.yml/badge.svg)](https://github.com/kkxx2026/189pan/actions/workflows/main.yml) [![项目主页](https://img.shields.io/badge/GitHub-项目主页-blue?logo=github)](https://github.com/kkxx2026/189pan)
 
-**最后更新:** 2026-11-11 15:44:43 CST
+**最后更新:** 2026-11-11 15:54:24 CST
 
 ## 快速导航
 
 - 🔄 [查看Action运行记录](https://github.com/kkxx2026/189pan/actions)
-- 📋 [查看最新运行](https://github.com/kkxx2026/189pan/actions/runs/42981575285)
+- 📋 [查看最新运行](https://github.com/kkxx2026/189pan/actions/runs/42982747953)
 - 🏠 [返回项目主页](https://github.com/kkxx2026/189pan)
 - ⚙️ [手动触发签到](https://github.com/kkxx2026/189pan/actions/workflows/main.yml)
 
@@ -16,7 +16,7 @@
 # 天翼云盘自动签到抽奖程序
 
 ## 执行概览
-- **启动时间**: 2026-11-11 15:43:50
+- **启动时间**: 2026-11-11 15:53:29
 - **账户数量**: 1 个
 
 ## 账户1
@@ -24,15 +24,18 @@
 ### 执行结果
 - **登录状态**: 登录成功
 - **签到结果**: 签到失败（无输出）
-- **签到输出**: panic: runtime error: index out of range [1] with length 0
+- **签到输出**: 未登录账号 [2026-11-11 15:54:19.564] use config dir from CLOUD189_CONFIG_DIR env:  /home/runner/work/_temp/cloud189-config [2026-11-11 15:54:19.564] use config dir from CLOUD189_CONFIG_
+- **签到诊断**: sign diag: users=0 activeUID=0 skLen=0 ckLen=0
 - **登录后配置**: users=0 activeUID=0 skLen=0 ckLen=0 size=355
-- **链式登录输出**: 	/home/runner/go/pkg/mod/github.com/urfave/cli@v1.21.1-0.***-23c***f/command.go:174 +0x63e github.com/urfave/cli.(*App).Run(0xc00020c380, {0xc00012a000, 0x4, 0x4}) 	/home/runner/go/pkg/mod/github.com/urfave/cli@v1.21.1-0.***-23c***f/app.go:276 +0xb67 main.main() 	/home/runner/work/_temp/cloudpan-src/main.go:552 +0x28f6 
-- **探测登录输出**: github.com/tickstep/cloudpan189-go/internal/command.RunLogin({0x7ffc318deb83?, 0x92ec00?}, {0x7ffc318deb99?, 0x781ce3?}) 	/home/runner/work/_temp/cloudpan-src/internal/command/login.go:144 +0x85 main.main.CmdLogin.func6(0xc00017c840) 	/home/runner/work/_temp/cloudpan-src/internal/command/login.go:50 +0x12e github.com/urfave/cli.HandleAction({0x88cc20?, 0x973698?}, 0x5?) 	/home/runner/go/pkg/mod/github.com/urfave/cli@v1.21.1-0.***-23c***f/app.go:523 +0x50 github.com/urfave/cli.Command.Run({{0x92f3fe, 0x5}, {0x0, 0x0}, {0x0, 0x0, 0x0}, {0x93c9ed, 0x18}, {0x0, ...}, ...}, ...) 	/home/runner/go/pkg/mod/github.com/urfave/cli@v1.21.1-0.***-23c***f/command.go:174 +0x63e github.com/urfave/cli.(*App).Run(0xc00020c380, {0xc00012a000, 0x4, 0x4}) 	/home/runner/go/pkg/mod/github.com/urfave/cli@v1.21.1-
+- **签到前配置**: users=0 activeUID=0 skLen=0 ckLen=0 size=355
+- **链式登录输出**: 登录失败 
+- **探测登录输出**: 	"result":0, 	"msg":"登录成功", 	"toUrl":"https://m.cloud.189.cn/zhuanti/2020/loginErrorPc/index.html?appId=***&paras=***&sign=***" } [2026-11-11 15:53:33.561] do request url: https://api.cloud.189.cn/getSessionForPC.action?clientType=TELEMAC&version=1.0.0&channelId=web_cloud.189.cn&redirectURL=https%3A%2F%2Fm.cloud.189.cn%2Fzhuanti%2F2020%2FloginErrorPc%2Findex.html%3FappId%3D***%26paras%***%26sign%*** [2026-11-11 15:53:35.206] response: {"res_code": 0, "res_message": "成功","accessToken":"***","familySessionKey":"17cfd2bd-07b6-4993-90eb-9e0f7829f60a_family","familySessionSecret":"***","getFileDiffSpan":60,"getUserInfoSpan":600,"isSaveName":"true","keepAlive":1000,"loginName":"***@189.cn","refreshToken":"***","sessionKey":"d94838df-c2e3-4d29-8d95-e7cfb0419bb5","sessionSecret":"***"}  [2026-11-1
+- **签到日志**: [2026-11-11 15:54:19.564] use config dir from CLOUD189_CONFIG_DIR env:  /home/runner/work/_temp/cloud189-config [2026-11-11 15:54:19.564] use config dir from CLOUD189_CONFIG_DIR env:  /home/runner/work/_temp/cloud189-config sign diag: users=0 activeUID=0 skLen=0 ckLen=0 未登录账号 
 
 ---
 
 ## 执行统计
-- **结束时间**: 2026-11-11 15:44:43
-- **运行时长**: 53 秒
+- **结束时间**: 2026-11-11 15:54:24
+- **运行时长**: 55 秒
 
 ✅ **所有账户处理完成！**
