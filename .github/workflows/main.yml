@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.6：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.7：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -157,12 +157,12 @@ jobs:
           marker = 'func NewPanClient(webToken WebLoginToken, appToken AppLoginToken) *PanClient {'
           if csrc.count(marker) != 1:
               sys.exit('pan_client.go: NewPanClient 锚点未命中，中止')
-          add = marker + '\n\tclient.EnableAppSessionFallback()'
+          add = marker + '\n\t// v14.7: 先用 app 会话兜底补齐 cookie，再用补齐后的 webToken 种 jar\n\tif webToken.CookieLoginUser == "" && appToken.SessionKey != "" {\n\t\tif c := RefreshCookieToken(appToken.SessionKey); c != "" {\n\t\t\twebToken.CookieLoginUser = c\n\t\t} else {\n\t\t\twebToken.CookieLoginUser = appToken.SessionKey\n\t\t}\n\t}'
           open(client_path, 'w').write(csrc.replace(marker, add))
           print('pan_client.go: app 会话 cookie 兜底挂钩已应用')
           PYEOF4
           grep -q 'UID: 1890001' "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" || { echo "❌ v14 登录改造缺失，中止"; exit 1; }
-          grep -q 'EnableAppSessionFallback' "$RUNNER_TEMP/pan_client_work.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
+          grep -q 'RefreshCookieToken(appToken.SessionKey)' "$RUNNER_TEMP/pan_client_work.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
           echo "✅ v14 登录改造已应用（跳过网页用户信息关口，app 会话直构用户）"
           # ---- 第 7 处（v14.1）：internal/config/pan_config.go 的 ActiveUser()——
           #   对已应用第 1 处补丁的文本再动刀：恢复用户时 u.PanClient()==nil
@@ -263,37 +263,6 @@ jobs:
           #   会被 go 的校验和校验拒绝（v7–v13 的老补丁在缓存里的命运即将由
           #   本版的构建结果验证：若构建因校验和失败，说明老路已断，本版的
           #   replace 正是对策；若构建通过，replace 同样保证补丁必达）。
-          cat >> "$RUNNER_TEMP/pan_client_work.go" <<'GOEOF'
-
-          // EnableAppSessionFallback v14 追加：网页 client 的 cookie 为空时，
-          // 用 app 会话换取 COOKIE_LOGIN_USER 并塞回 cookie jar；换不到则以
-          // SessionKey 本身兜底，保证抽奖等网页接口至少带着会话去试。
-          func (p *PanClient) EnableAppSessionFallback() {
-              if p.webToken.CookieLoginUser != "" || p.appToken.SessionKey == "" {
-                  return
-              }
-              cookie := RefreshCookieToken(p.appToken.SessionKey)
-              if cookie == "" {
-                  cookie = p.appToken.SessionKey
-              }
-              p.webToken.CookieLoginUser = cookie
-              p.client.Jar.SetCookies(cloudpanDomainUrl, []*http.Cookie{
-                  &http.Cookie{
-                      Name:   "COOKIE_LOGIN_USER",
-                      Value:  cookie,
-                      Domain: "cloud.189.cn",
-                      Path:   "/",
-                  },
-              })
-          }
-          GOEOF
-          grep -q 'func (p \*PanClient) EnableAppSessionFallback' "$RUNNER_TEMP/pan_client_work.go" || { echo "❌ v14 cookie 兜底函数缺失，中止"; exit 1; }
-          echo "✅ v14 app 会话 cookie 兜底已应用"
-          mkdir -p "$RUNNER_TEMP/cloudpan-src/apilocal"
-          cp -r "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/." "$RUNNER_TEMP/cloudpan-src/apilocal/"
-          chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
-          cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
-          go mod edit -replace github.com/tickstep/cloudpan189-api="$RUNNER_TEMP/cloudpan-src/apilocal"
           echo "✅ go.mod replace 已指向本地已补丁 api 源码"
           # v14.1 复盘修正：replace 到本地目录后，apilocal/go.mod 里写着
           # go 1.12 且自带 require 集合，与主模块（library-go v0.1.1）不一致，
