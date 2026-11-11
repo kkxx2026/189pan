@@ -41,23 +41,30 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v9：登录恢复再补两处）
+      - name: Build cloudpan189-go (v11：签到进程开启诊断日志）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
           cd "$RUNNER_TEMP/cloudpan-src"
-          # ---- v9 新增：客户端源码两处补丁（对象：cloudpan189-go master 克隆件）
-          # 第 1 处：internal/config/pan_config.go 的 ActiveUser() 恢复用户时，
+          # ---- 客户端补丁（对象：cloudpan189-go master 克隆件）
+          # 第 1 处（v9）：internal/config/pan_config.go 的 ActiveUser() 恢复用户时，
           #   SetupUserByCookie 失败就判死刑（GetUserInfo 是网页接口，依赖网页 cookie，
           #   在 Actions 里时好时坏）。改为：电脑客户端会话（SessionKey）仍在时，
           #   直接以 app 会话恢复已存用户（UID/昵称保留），签到只用 SessionKey。
-          # 第 2 处：main.go 的 checkLoginExpiredAndRelogin() 原来每次调用都重登
-          #   （UID != 0 恒真），新登录会顶掉已存网页会话且其网页兜底本就时好时坏。
-          #   改为：只有确实没有可用用户时才重登；自动化流程里登录步骤已在签到前
-          #   刚刷新过会话，这里不再动它。
-          python3 - "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" "$RUNNER_TEMP/cloudpan-src/main.go" <<'PYEOF2'
+          # 第 2 处（v9）：main.go 的 checkLoginExpiredAndRelogin() 原来每次调用都重登
+          #   （UID != 0 恒真），改为只有确实没有可用用户时才重登。
+          # 第 3 处（v10）：internal/config/pan_user.go 的 SetupUserByCookie 里，
+          #   GetUserInfo 通过后还要过 GetUserDetailInfo（网页 /v2/ 接口）这一关，
+          #   失败照样整个返回错误——#13 实测：前两处补丁生效后，前两关已过，
+          #   死在这一关（同一 cookie 几秒前刚通过 GetUserInfo，详情接口却拒，
+          #   疑似有并发限制）。改为：详情拉不到但 SessionKey 在，直接返回已构造
+          #   的用户（UID/昵称在这一关之前就已写入），性别资料对签到无用。
+          # v11 说明：客户端三处补丁一处未动；改动只在 Run checkin 步骤——
+          #   签到进程也开 CLOUD189_VERBOSE=1、单独留日志并把脱敏日志尾带进
+          #   记录的「签到日志」行，一趟看清死在哪一关（见下方运行步骤注释）。
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" "$RUNNER_TEMP/cloudpan-src/main.go" "$RUNNER_TEMP/cloudpan-src/internal/config/pan_user.go" <<'PYEOF2'
           import sys
-          pan_path, main_path = sys.argv[1], sys.argv[2]
+          pan_path, main_path, user_path = sys.argv[1], sys.argv[2], sys.argv[3]
           src = open(pan_path).read()
           old_a = '\t\t\t\tif u.PanClient() == nil {\n\t\t\t\t\t// restore client\n\t\t\t\t\tuser, err := SetupUserByCookie(&u.WebToken, &u.AppToken)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\tlogger.Verboseln("setup user error")\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t}\n\t\t\t\t\tu.panClient = user.panClient\n\t\t\t\t\tu.Nickname = user.Nickname\n'
           new_a = '\t\t\t\tif u.PanClient() == nil {\n\t\t\t\t\t// restore client\n\t\t\t\t\tuser, err := SetupUserByCookie(&u.WebToken, &u.AppToken)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t// 网页侧校验失败时，若电脑客户端会话仍在，直接以 app 会话恢复：\n\t\t\t\t\t\t// 签到只用 SessionKey，不依赖网页 cookie；这里返回已存的用户\n\t\t\t\t\t\t//（UID 与昵称都保留），而不是在恢复处就判死刑\n\t\t\t\t\t\tif u.AppToken.SessionKey != "" {\n\t\t\t\t\t\t\tlogger.Verboseln("setup user by cookie failed, restore with app session only")\n\t\t\t\t\t\t\tu.panClient = cloudpan.NewPanClient(u.WebToken, u.AppToken)\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tlogger.Verboseln("setup user error")\n\t\t\t\t\t\t\treturn nil\n\t\t\t\t\t\t}\n\t\t\t\t\t} else {\n\t\t\t\t\t\tu.panClient = user.panClient\n\t\t\t\t\t\tu.Nickname = user.Nickname\n\t\t\t\t\t}\n'
@@ -72,10 +79,18 @@ jobs:
               sys.exit('main.go: 重登条件锚点未命中，中止')
           open(main_path, 'w').write(src.replace(old_b, new_b))
           print('main.go: 重登条件已收紧')
+          src = open(user_path).read()
+          old_c = '\tuserDetailInfo, err := panClient.GetUserDetailInfo()\n\tif userDetailInfo != nil {\n'
+          new_c = '\tuserDetailInfo, err := panClient.GetUserDetailInfo()\n\tif userDetailInfo == nil && appToken.SessionKey != "" {\n\t\t// 网页侧详情接口失败但电脑客户端会话仍在：不要判死刑——\n\t\t// 签到只用 SessionKey，性别等资料对签到无用，直接以 app 会话返回用户\n\t\tlogger.Verboseln("get user detail info failed, continue with app session only")\n\t\treturn u, nil\n\t}\n\tif userDetailInfo != nil {\n'
+          if src.count(old_c) != 1:
+              sys.exit('pan_user.go: 详情关口锚点未命中，中止')
+          open(user_path, 'w').write(src.replace(old_c, new_c))
+          print('pan_user.go: 详情关口兜底已应用')
           PYEOF2
           grep -q 'restore with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" || { echo "❌ 恢复兜底缺失，中止"; exit 1; }
           grep -q 'if activeUser == nil {' "$RUNNER_TEMP/cloudpan-src/main.go" || { echo "❌ 重登条件未收紧，中止"; exit 1; }
-          echo "✅ 客户端两处补丁已应用（恢复兜底 + 重登收紧）"
+          grep -q 'get user detail info failed, continue with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_user.go" || { echo "❌ 详情关口兜底缺失，中止"; exit 1; }
+          echo "✅ 客户端三处补丁已应用（恢复兜底 + 重登收紧 + 详情关口兜底）"
           # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
           # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
           #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
@@ -145,7 +160,7 @@ jobs:
           fi
           grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
           grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
-          echo "✅ v9 补丁已全部应用（客户端 2 处 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
+          echo "✅ v11 基线补丁已全部应用（客户端 3 处 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验；v11 改动在运行步骤）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
@@ -159,13 +174,17 @@ jobs:
           START_STR=$(date '+%Y-%m-%d %H:%M:%S')
           BIN="$RUNNER_TEMP/cloudpan189-go"
 
-          # 登录 + 签到 + 抽奖（v9：沿用 v6 的链式调用与整链重试 3 次；
+          # 登录 + 签到 + 抽奖（v11：链式调用与整链重试 3 次不变；
           # 修复都在 Build 步骤的补丁里——v7/v8 的抓取保护、空指针守卫、
-          # recover/字段校验不变；v9 再补两处：用户恢复时网页校验失败改走
-          # app 会话兜底、每次调用都重登改为仅无用户时重登，目标是签到
-          # 进程不再因「未登录账号」丢掉刚登录好的会话）
+          # recover/字段校验不变；v9 补「恢复时网页校验失败走 app 会话兜底 +
+          # 仅无用户时重登」；v10 再补「详情关口同样兜底」。
+          # v11 只改观测：签到进程也开 CLOUD189_VERBOSE=1、单独写入 SIGN_LOG，
+          # 并把脱敏日志尾带进记录的「签到日志」行——死在哪一关一趟看清，
+          # 不再靠猜。）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
+          SIGN_LOG="$RUNNER_TEMP/sign-verbose.log"
           : > "$CHAIN_LOG"
+          : > "$SIGN_LOG"
           LOGIN_OK=false
           for attempt in 1 2; do
             CLOUD189_VERBOSE=1 "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$CHAIN_LOG" 2>&1 || true
@@ -178,7 +197,8 @@ jobs:
           if [ "$LOGIN_OK" = "true" ]; then
             LOGIN_STATUS="登录成功"
             for attempt in 1 2 3; do
-              "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && "$BIN" sign >> "$CHAIN_LOG" 2>&1 || true
+              "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && CLOUD189_VERBOSE=1 "$BIN" sign > "$SIGN_LOG" 2>&1 || true
+              cat "$SIGN_LOG" >> "$CHAIN_LOG"
               if grep -a -q -E "签到成功|今日已签到|签到失败" "$CHAIN_LOG"; then
                 break
               fi
@@ -220,6 +240,11 @@ jobs:
             DRAW1=$(grep -a -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
             DRAW2=$(grep -a -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
           fi
+          # v11 诊断：签到进程的 verbose 日志尾（脱敏）带进记录，一趟看清死点
+          SIGN_TAIL=""
+          if [ -s "$SIGN_LOG" ]; then
+            SIGN_TAIL=$(tail -8 "$SIGN_LOG" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-500)
+          fi
 
           END_TS=$(date +%s)
           END_STR=$(date '+%Y-%m-%d %H:%M:%S')
@@ -257,6 +282,9 @@ jobs:
             echo "- **签到结果**: $SIGN_RESULT"
             if [ -n "$SIGN_DETAIL" ]; then
               echo "- **签到输出**: $SIGN_DETAIL"
+            fi
+            if [ -n "$SIGN_TAIL" ]; then
+              echo "- **签到日志**: $SIGN_TAIL"
             fi
             if [ -n "$DRAW1" ] || [ -n "$DRAW2" ]; then
               echo "- **抽奖结果**:"
