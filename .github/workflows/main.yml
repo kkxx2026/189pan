@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.1：登录不再依赖网页用户信息接口）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
@@ -156,6 +156,27 @@ jobs:
           grep -q 'UID: 1890001' "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" || { echo "❌ v14 登录改造缺失，中止"; exit 1; }
           grep -q 'EnableAppSessionFallback' "$LIBDIR/pan_client.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
           echo "✅ v14 登录改造已应用（跳过网页用户信息关口，app 会话直构用户）"
+          # ---- 第 7 处（v14.1）：internal/config/pan_config.go 的 ActiveUser()——
+          #   对已应用第 1 处补丁的文本再动刀：恢复用户时 u.PanClient()==nil
+          #   原走 SetupUserByCookie，其 GetUserInfo 的 UID 读自网页回信的
+          #   domainName 并 ParseInt——该字段现装带点域名，解析恒 0，新构造的
+          #   用户反被 UID=0 的「成功结果」替换，ActiveUser() 照样返回 nil。
+          #   改为：SessionKey 在就直接用已存令牌 NewPanClient 恢复并保留
+          #   已存 UID/昵称；仅无 SessionKey 时才走老路（其 err 分支保留 v9
+          #   兜底结构，用 else-if 承接，括号与原结构严丝合缝）。
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" <<'PYEOF5'
+          import sys
+          p = sys.argv[1]
+          src = open(p).read()
+          old_r = '\t\t\t\t\tuser, err := SetupUserByCookie(&u.WebToken, &u.AppToken)\n\t\t\t\t\tif err != nil {\n'
+          new_r = '\t\t\t\t\tif u.AppToken.SessionKey != "" {\n\t\t\t\t\t\t// v14.1: 网页用户信息接口的 UID 来源（domainName）已变样，\n\t\t\t\t\t\t// 恢复时不再走 SetupUserByCookie，直接以已存 app 会话恢复，\n\t\t\t\t\t\t// UID/昵称保留存档原值\n\t\t\t\t\t\tu.panClient = cloudpan.NewPanClient(u.WebToken, u.AppToken)\n\t\t\t\t\t} else if user, err := SetupUserByCookie(&u.WebToken, &u.AppToken); err != nil {\n'
+          if src.count(old_r) != 1:
+              sys.exit('pan_config.go: v14.1 恢复短路锚点未命中，中止')
+          open(p, 'w').write(src.replace(old_r, new_r))
+          print('pan_config.go: v14.1 恢复短路已应用')
+          PYEOF5
+          grep -q 'v14.1: 网页用户信息接口的 UID 来源' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_config.go" || { echo "❌ v14.1 恢复短路缺失，中止"; exit 1; }
+          echo "✅ v14.1 恢复短路已应用（恢复用户不再走网页用户信息接口）"
           # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
           # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
           #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
