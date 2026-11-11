@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v11：签到进程开启诊断日志）
+      - name: Build cloudpan189-go (v12：签到动作自带诊断标记）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
@@ -91,6 +91,26 @@ jobs:
           grep -q 'if activeUser == nil {' "$RUNNER_TEMP/cloudpan-src/main.go" || { echo "❌ 重登条件未收紧，中止"; exit 1; }
           grep -q 'get user detail info failed, continue with app session only' "$RUNNER_TEMP/cloudpan-src/internal/config/pan_user.go" || { echo "❌ 详情关口兜底缺失，中止"; exit 1; }
           echo "✅ 客户端三处补丁已应用（恢复兜底 + 重登收紧 + 详情关口兜底）"
+          # ---- 第 4 处（v12）：internal/command/user_sign.go 的 sign 动作开头加一行
+          #   无条件打印的诊断标记（fmt.Printf，不受 verbose 开关影响）：
+          #   users/activeUID/skLen/ckLen —— #15 的教训是 verbose 行在 sign 进程的
+          #   日志里只剩启动期的配置目录两行，恢复链的 verbose 标记一行没出，
+          #   无法区分「没走到恢复」与「标记没打」。这一行由签到动作本体无条件
+          #   打印：若它出现，说明配置已读入、就差 ActiveUser() 判定；若它不
+          #   出现，说明死在更上游的启动重登关口，与恢复链无关。
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/command/user_sign.go" <<'PYEOF3'
+          import sys
+          p = sys.argv[1]
+          src = open(p).read()
+          old7 = '\t\tAction: func(c *cli.Context) error {\n\t\t\tif config.Config.ActiveUser() == nil {\n'
+          new7 = '\t\tAction: func(c *cli.Context) error {\n\t\t\t{\n\t\t\t\t_users := config.Config.UserList\n\t\t\t\t_sk, _ck := 0, 0\n\t\t\t\tif len(_users) > 0 {\n\t\t\t\t\t_sk = len(_users[0].AppToken.SessionKey)\n\t\t\t\t\t_ck = len(_users[0].WebToken.CookieLoginUser)\n\t\t\t\t}\n\t\t\t\tfmt.Printf("sign diag: users=%d activeUID=%d skLen=%d ckLen=%d\\n", len(_users), config.Config.ActiveUID, _sk, _ck)\n\t\t\t}\n\t\t\tif config.Config.ActiveUser() == nil {\n'
+          if src.count(old7) != 1:
+              sys.exit('user_sign.go: 诊断标记锚点未命中，中止')
+          open(p, 'w').write(src.replace(old7, new7))
+          print('user_sign.go: 签到诊断标记已应用')
+          PYEOF3
+          grep -q 'sign diag: users=' "$RUNNER_TEMP/cloudpan-src/internal/command/user_sign.go" || { echo "❌ 签到诊断标记缺失，中止"; exit 1; }
+          echo "✅ v12 签到诊断标记已应用"
           # --- 补丁总览（对象：cloudpan189-api v0.1.0，已审计版本）
           # 第一层（v7）：两个登录参数刮取器共 10 处 FindStringSubmatch(content)[1]
           #   无保护，页面缺字段即崩（index out of range [1]）→ 全部改为带长度保护。
@@ -160,7 +180,7 @@ jobs:
           fi
           grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
           grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
-          echo "✅ v11 基线补丁已全部应用（客户端 3 处 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验；v11 改动在运行步骤）"
+          echo "✅ 基线补丁已全部应用（客户端 3 处 + 签到诊断标记 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
           go build -o "$RUNNER_TEMP/cloudpan189-go" .
 
       - name: Run checkin
@@ -180,7 +200,11 @@ jobs:
           # 仅无用户时重登」；v10 再补「详情关口同样兜底」。
           # v11 只改观测：签到进程也开 CLOUD189_VERBOSE=1、单独写入 SIGN_LOG，
           # 并把脱敏日志尾带进记录的「签到日志」行——死在哪一关一趟看清，
-          # 不再靠猜。）
+          # 不再靠猜。
+          # v12 只加一处观测（在 Build 步骤）：sign 动作开头无条件打印
+          # 「sign diag: users=.. activeUID=.. skLen=.. ckLen=..」——#15 实测
+          # verbose 标记在 sign 进程里没出全，这一行不受 verbose 影响，
+          # 出现与否直接区分「死在启动重登关口」还是「死在签到恢复判定」。）
           CHAIN_LOG="$RUNNER_TEMP/chain.log"
           SIGN_LOG="$RUNNER_TEMP/sign-verbose.log"
           : > "$CHAIN_LOG"
@@ -240,6 +264,7 @@ jobs:
             DRAW1=$(grep -a -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
             DRAW2=$(grep -a -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
           fi
+          SIGN_DIAG=$(grep -a -m1 "sign diag:" "$RUNNER_TEMP/sign.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-200)
           # v11 诊断：签到进程的 verbose 日志尾（脱敏）带进记录，一趟看清死点
           SIGN_TAIL=""
           if [ -s "$SIGN_LOG" ]; then
@@ -282,6 +307,9 @@ jobs:
             echo "- **签到结果**: $SIGN_RESULT"
             if [ -n "$SIGN_DETAIL" ]; then
               echo "- **签到输出**: $SIGN_DETAIL"
+            fi
+            if [ -n "$SIGN_DIAG" ]; then
+              echo "- **签到诊断**: $SIGN_DIAG"
             fi
             if [ -n "$SIGN_TAIL" ]; then
               echo "- **签到日志**: $SIGN_TAIL"
