@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.8：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.9：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -263,7 +263,20 @@ jobs:
           #   会被 go 的校验和校验拒绝（v7–v13 的老补丁在缓存里的命运即将由
           #   本版的构建结果验证：若构建因校验和失败，说明老路已断，本版的
           #   replace 正是对策；若构建通过，replace 同样保证补丁必达）。
-          echo "✅ go.mod replace 已指向本地已补丁 api 源码"
+          # ---- 客户端补丁第 8 处（v14.9）：apilocal 真组建 + replace（修复 v14.6
+          #   重构时丢失的搬运段：v14.6–v14.8 只剩上面这句 echo 断言，cp/edit
+          #   命令本体从未存在，pan_client 补丁滞留工作副本、从未进过编译）----
+          APIDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
+          rm -rf "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp -r "$APIDIR" "$RUNNER_TEMP/cloudpan-src/apilocal"
+          chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
+          grep -q 'RefreshCookieToken(appToken.SessionKey)' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go" || { echo "❌ apilocal 内 pan_client.go 补丁缺失，中止"; exit 1; }
+          cp "$RUNNER_TEMP/app_login.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go"
+          cp "$RUNNER_TEMP/login.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go"
+          (cd "$RUNNER_TEMP/cloudpan-src" && go mod edit -replace github.com/tickstep/cloudpan189-api=./apilocal && grep -q 'cloudpan189-api => ./apilocal' go.mod) || { echo "❌ go.mod replace 未生效，中止"; exit 1; }
+          echo "✅ apilocal 已组建（pan_client/app_login/login 三文件均为补丁版）且 go.mod replace 已生效"
+          echo "（历史断言保留）go.mod replace 已指向本地已补丁 api 源码"
           # v14.1 复盘修正：replace 到本地目录后，apilocal/go.mod 里写着
           # go 1.12 且自带 require 集合，与主模块（library-go v0.1.1）不一致，
           # 默认 -mod=readonly 会直接拒绝构建。放开为 -mod=mod 并跑一遍
