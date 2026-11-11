@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.5：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.6：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -132,12 +132,14 @@ jobs:
           #   构造 PanClient，跳过网页用户信息/详情两关，UID 用固定非零占位
           #   1890001（仅本地索引用，签到与抽奖都不读它），然后加密保存账密
           #   并 SetActiveUser —— 登录落盘不再依赖任何网页接口。
+          GOMODCACHE="$(go env GOMODCACHE)"
           LIBDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/cloudpan"
           if [ ! -f "$LIBDIR/pan_client.go" ]; then (cd "$RUNNER_TEMP/cloudpan-src" && go mod download github.com/tickstep/cloudpan189-api); fi
           [ -f "$LIBDIR/pan_client.go" ] || { echo "❌ cloudpan189-api v0.1.0 源码仍未就位，中止"; exit 1; }
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/pan_client.go" -o "$RUNNER_TEMP/pan_client.go.orig"
           cp "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$RUNNER_TEMP/login_cmd.go.orig"
-          python3 - "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$LIBDIR/pan_client.go" "$RUNNER_TEMP/login_cmd.go.orig" "$RUNNER_TEMP/pan_client.go.orig" <<'PYEOF4'
+          cp "$RUNNER_TEMP/pan_client.go.orig" "$RUNNER_TEMP/pan_client_work.go"
+          python3 - "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/login_cmd.go.orig" "$RUNNER_TEMP/pan_client.go.orig" <<'PYEOF4'
           import sys
           login_path, client_path, login_orig_path, client_orig_path = sys.argv[1:5]
           if open(login_path).read() != open(login_orig_path).read():
@@ -160,7 +162,7 @@ jobs:
           print('pan_client.go: app 会话 cookie 兜底挂钩已应用')
           PYEOF4
           grep -q 'UID: 1890001' "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" || { echo "❌ v14 登录改造缺失，中止"; exit 1; }
-          grep -q 'EnableAppSessionFallback' "$LIBDIR/pan_client.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
+          grep -q 'EnableAppSessionFallback' "$RUNNER_TEMP/pan_client_work.go" || { echo "❌ v14 cookie 兜底挂钩缺失，中止"; exit 1; }
           echo "✅ v14 登录改造已应用（跳过网页用户信息关口，app 会话直构用户）"
           # ---- 第 7 处（v14.1）：internal/config/pan_config.go 的 ActiveUser()——
           #   对已应用第 1 处补丁的文本再动刀：恢复用户时 u.PanClient()==nil
@@ -261,7 +263,7 @@ jobs:
           #   会被 go 的校验和校验拒绝（v7–v13 的老补丁在缓存里的命运即将由
           #   本版的构建结果验证：若构建因校验和失败，说明老路已断，本版的
           #   replace 正是对策；若构建通过，replace 同样保证补丁必达）。
-          cat >> "$LIBDIR/pan_client.go" <<'GOEOF'
+          cat >> "$RUNNER_TEMP/pan_client_work.go" <<'GOEOF'
 
           // EnableAppSessionFallback v14 追加：网页 client 的 cookie 为空时，
           // 用 app 会话换取 COOKIE_LOGIN_USER 并塞回 cookie jar；换不到则以
@@ -285,11 +287,12 @@ jobs:
               })
           }
           GOEOF
-          grep -q 'func (p \*PanClient) EnableAppSessionFallback' "$LIBDIR/pan_client.go" || { echo "❌ v14 cookie 兜底函数缺失，中止"; exit 1; }
+          grep -q 'func (p \*PanClient) EnableAppSessionFallback' "$RUNNER_TEMP/pan_client_work.go" || { echo "❌ v14 cookie 兜底函数缺失，中止"; exit 1; }
           echo "✅ v14 app 会话 cookie 兜底已应用"
           mkdir -p "$RUNNER_TEMP/cloudpan-src/apilocal"
           cp -r "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/." "$RUNNER_TEMP/cloudpan-src/apilocal/"
           chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
           go mod edit -replace github.com/tickstep/cloudpan189-api="$RUNNER_TEMP/cloudpan-src/apilocal"
           echo "✅ go.mod replace 已指向本地已补丁 api 源码"
           # v14.1 复盘修正：replace 到本地目录后，apilocal/go.mod 里写着
