@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.10：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.11：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -194,6 +194,19 @@ jobs:
           # 第三层（v8 新增）：appGetLoginParams 整体加 recover 兜底 + 必需字段
           #   （jRsaKey/Lt/ReturnUrl/ParamId/ReqId）缺一即返回「登录参数不完整」错误，
           #   不再带着空参数往下走、把小问题拖成崩溃。
+          # ---- v14.11 顺序修正：apilocal 组建段前移到基线段之前 ----
+          #   （#28 实证：基线 curl 直落 apilocal 时目录尚不存在，curl 退出码 23）
+          GOMODCACHE="$(go env GOMODCACHE)"
+          APIDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
+          rm -rf "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp -r "$APIDIR" "$RUNNER_TEMP/cloudpan-src/apilocal"
+          chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
+          cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
+          # 注：app_login.go / login.go 已由基线段直接在 apilocal 内打补丁，此处不再覆盖
+          grep -q 'RefreshCookieToken(appToken.SessionKey)' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go" || { echo "❌ apilocal 内 pan_client.go 补丁缺失，中止"; exit 1; }
+          (cd "$RUNNER_TEMP/cloudpan-src" && go mod edit -replace github.com/tickstep/cloudpan189-api=./apilocal && grep -q 'cloudpan189-api => ./apilocal' go.mod) || { echo "❌ go.mod replace 未生效，中止"; exit 1; }
+          echo "✅ apilocal 已组建（pan_client/app_login/login 三文件均为补丁版）且 go.mod replace 已生效"
+          mkdir -p "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan"
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go"
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go"
           GOMODCACHE="$(go env GOMODCACHE)"
@@ -264,15 +277,6 @@ jobs:
           # ---- 客户端补丁第 8 处（v14.9）：apilocal 真组建 + replace（修复 v14.6
           #   重构时丢失的搬运段：v14.6–v14.8 只剩上面这句 echo 断言，cp/edit
           #   命令本体从未存在，pan_client 补丁滞留工作副本、从未进过编译）----
-          APIDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
-          rm -rf "$RUNNER_TEMP/cloudpan-src/apilocal"
-          cp -r "$APIDIR" "$RUNNER_TEMP/cloudpan-src/apilocal"
-          chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
-          cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
-          # 注：app_login.go / login.go 已由基线段直接在 apilocal 内打补丁，此处不再覆盖
-          grep -q 'RefreshCookieToken(appToken.SessionKey)' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go" || { echo "❌ apilocal 内 pan_client.go 补丁缺失，中止"; exit 1; }
-          (cd "$RUNNER_TEMP/cloudpan-src" && go mod edit -replace github.com/tickstep/cloudpan189-api=./apilocal && grep -q 'cloudpan189-api => ./apilocal' go.mod) || { echo "❌ go.mod replace 未生效，中止"; exit 1; }
-          echo "✅ apilocal 已组建（pan_client/app_login/login 三文件均为补丁版）且 go.mod replace 已生效"
           echo "（历史断言保留）go.mod replace 已指向本地已补丁 api 源码"
           # v14.1 复盘修正：replace 到本地目录后，apilocal/go.mod 里写着
           # go 1.12 且自带 require 集合，与主模块（library-go v0.1.1）不一致，
