@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.3：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.4：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -193,7 +193,8 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/login.go"
           GOMODCACHE="$(go env GOMODCACHE)"
           LIBDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/cloudpan"
-          if [ ! -d "$LIBDIR" ]; then go mod download github.com/tickstep/cloudpan189-api; fi
+          if [ ! -f "$LIBDIR/pan_client.go" ]; then (cd "$RUNNER_TEMP/cloudpan-src" && go mod download github.com/tickstep/cloudpan189-api); fi
+          [ -f "$LIBDIR/pan_client.go" ] || { echo "❌ cloudpan189-api v0.1.0 源码仍未就位，中止"; exit 1; }
           [ -d "$LIBDIR" ] || { echo "❌ 找不到 cloudpan189-api v0.1.0 源码目录，补丁中止"; exit 1; }
           chmod -R u+w "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
           cp "$RUNNER_TEMP/app_login.go" "$LIBDIR/app_login.go"
