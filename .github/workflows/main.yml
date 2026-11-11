@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.11：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.12：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -264,6 +264,27 @@ jobs:
           grep -q 'r == nil || r.Msg' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
           grep -q '登录参数不完整' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
           echo "✅ 基线补丁已全部应用（客户端 3 处 + 签到诊断标记 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
+          # ---- 客户端补丁第 9 处（v14.12）：cmder/cmder_helper.go 的 DoLoginHelper——
+          #   RefreshCookieToken 换不到 cookie 时，原代码走 cloudpan.Login 网页直登
+          #   兜底；该登录页（udb_login.jsp）早已下线，此路必死，且死在 CmdLogin 的
+          #   存档段之前——这是 users=0 的总闸。改为：cookie 换不到就带着空 cookie
+          #   返回成功（app 会话已足用；签到走 SessionKey，抽奖的 cookie 由
+          #   NewPanClient 自举兜底在运行时补齐）。captcha 分支随之不可达，无害。
+          python3 - "$RUNNER_TEMP/cloudpan-src/cmder/cmder_helper.go" <<'PYEOF6'
+          import sys
+          p = sys.argv[1]
+          src = open(p).read()
+          old = '\t\twtoken, apperr = cloudpan.Login(username, password)\n'
+          new = '\t\t// v14.12: 网页直登页已下线，cookie 换不到不再走兜底直登，\n\t\t// 带着空 cookie 返回（app 会话已足用，抽奖 cookie 由运行时自举补齐）\n\t\twtoken = &cloudpan.WebLoginToken{}\n\t\tapperr = nil\n\t\t_ = apperr\n\t\tif false { wtoken, apperr = cloudpan.Login(username, password) }\n'
+          # simpler & robust: keep the original call unreachable
+          new = '\t\tif true { wtoken = &cloudpan.WebLoginToken{} } else { wtoken, apperr = cloudpan.Login(username, password) } // v14.12: 网页直登已下线，跳过兜底\n'
+          if src.count(old) != 1:
+              sys.exit('cmder_helper.go: v14.12 兜底锚点未命中，中止')
+          open(p, 'w').write(src.replace(old, new))
+          print('cmder_helper.go: v14.12 网页兜底已跳过')
+          PYEOF6
+          grep -q 'v14.12: 网页直登已下线' "$RUNNER_TEMP/cloudpan-src/cmder/cmder_helper.go" || { echo "❌ v14.12 兜底跳过缺失，中止"; exit 1; }
+          echo "✅ v14.12 网页兜底已跳过（DoLoginHelper 不再走下线登录页）"
           # ---- 客户端补丁第 6 处（v14）：cloudpan189-api 的 pan_client.go 末尾追加
           #   EnableAppSessionFallback —— NewPanClient 造的网页 client 原本只带
           #   COOKIE_LOGIN_USER 一只 cookie；该值为空时（SSO 换 cookie 现已不稳），
