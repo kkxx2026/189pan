@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.7：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.8：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -313,6 +313,13 @@ jobs:
             fi
             sleep 5
           done
+          PROBE_TAIL=""
+          if [ -s "$CHAIN_LOG" ]; then
+            PROBE_TAIL=$(tail -12 "$CHAIN_LOG" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-800)
+          fi
+          echo "----- 探测登录日志尾（已打码，末尾12行） -----"
+          echo "$PROBE_TAIL"
+          echo "---------------------------------------------"
           # v13 配置文件快照函数：只报个数/长度/字节数，绝不输出令牌内容
           cfg_snapshot() {
             python3 - "$CLOUD189_CONFIG_DIR/cloud189_config.json" <<'PYEOF_CFG'
@@ -446,6 +453,9 @@ jobs:
             fi
             if [ -n "$CHAIN_LOGIN_TAIL" ]; then
               echo "- **链式登录输出**: $CHAIN_LOGIN_TAIL"
+            fi
+            if [ -n "$PROBE_TAIL" ]; then
+              echo "- **探测登录输出**: $PROBE_TAIL"
             fi
             if [ -n "$SIGN_TAIL" ]; then
               echo "- **签到日志**: $SIGN_TAIL"
