@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.4：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.5：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -132,6 +132,9 @@ jobs:
           #   构造 PanClient，跳过网页用户信息/详情两关，UID 用固定非零占位
           #   1890001（仅本地索引用，签到与抽奖都不读它），然后加密保存账密
           #   并 SetActiveUser —— 登录落盘不再依赖任何网页接口。
+          LIBDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/cloudpan"
+          if [ ! -f "$LIBDIR/pan_client.go" ]; then (cd "$RUNNER_TEMP/cloudpan-src" && go mod download github.com/tickstep/cloudpan189-api); fi
+          [ -f "$LIBDIR/pan_client.go" ] || { echo "❌ cloudpan189-api v0.1.0 源码仍未就位，中止"; exit 1; }
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/pan_client.go" -o "$RUNNER_TEMP/pan_client.go.orig"
           cp "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$RUNNER_TEMP/login_cmd.go.orig"
           python3 - "$RUNNER_TEMP/cloudpan-src/internal/command/login.go" "$LIBDIR/pan_client.go" "$RUNNER_TEMP/login_cmd.go.orig" "$RUNNER_TEMP/pan_client.go.orig" <<'PYEOF4'
@@ -192,9 +195,6 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/app_login.go"
           curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/login.go"
           GOMODCACHE="$(go env GOMODCACHE)"
-          LIBDIR="$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0/cloudpan"
-          if [ ! -f "$LIBDIR/pan_client.go" ]; then (cd "$RUNNER_TEMP/cloudpan-src" && go mod download github.com/tickstep/cloudpan189-api); fi
-          [ -f "$LIBDIR/pan_client.go" ] || { echo "❌ cloudpan189-api v0.1.0 源码仍未就位，中止"; exit 1; }
           [ -d "$LIBDIR" ] || { echo "❌ 找不到 cloudpan189-api v0.1.0 源码目录，补丁中止"; exit 1; }
           chmod -R u+w "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
           cp "$RUNNER_TEMP/app_login.go" "$LIBDIR/app_login.go"
