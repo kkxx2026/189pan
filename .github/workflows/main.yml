@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.9：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.10：登录不再依赖网页用户信息接口）
         shell: bash
         run: |
           set -e
@@ -194,14 +194,12 @@ jobs:
           # 第三层（v8 新增）：appGetLoginParams 整体加 recover 兜底 + 必需字段
           #   （jRsaKey/Lt/ReturnUrl/ParamId/ReqId）缺一即返回「登录参数不完整」错误，
           #   不再带着空参数往下走、把小问题拖成崩溃。
-          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/app_login.go"
-          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/login.go"
+          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/app_login.go" -o "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go"
+          curl -fsSL "https://raw.githubusercontent.com/tickstep/cloudpan189-api/v0.1.0/cloudpan/login.go" -o "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go"
           GOMODCACHE="$(go env GOMODCACHE)"
           [ -d "$LIBDIR" ] || { echo "❌ 找不到 cloudpan189-api v0.1.0 源码目录，补丁中止"; exit 1; }
           chmod -R u+w "$GOMODCACHE/github.com/tickstep/cloudpan189-api@v0.1.0"
-          cp "$RUNNER_TEMP/app_login.go" "$LIBDIR/app_login.go"
-          cp "$RUNNER_TEMP/login.go" "$LIBDIR/login.go"
-          python3 - "$LIBDIR/app_login.go" 6 "$LIBDIR/login.go" 4 <<'PYEOF'
+          python3 - "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go" 6 "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go" 4 <<'PYEOF'
           import re, sys
           args = sys.argv[1:]
           PAT = re.compile(r'^\tparams\.(\w+) = re\.FindStringSubmatch\(content\)\[1\]$')
@@ -246,12 +244,12 @@ jobs:
           open(app_path, 'w').write(src.replace(tail, tail_new))
           print('app_login.go: recover 兜底 + 必需字段校验已应用')
           PYEOF
-          if grep -rn "FindStringSubmatch(content)\[1\]" "$LIBDIR/app_login.go" "$LIBDIR/login.go" > /dev/null; then
+          if grep -rn "FindStringSubmatch(content)\[1\]" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go" > /dev/null; then
             echo "❌ 仍有未加保护的抓取，补丁不完整，中止"
             exit 1
           fi
-          grep -q 'r == nil || r.Msg' "$LIBDIR/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
-          grep -q '登录参数不完整' "$LIBDIR/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
+          grep -q 'r == nil || r.Msg' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go" || { echo "❌ 空指针守卫缺失，中止"; exit 1; }
+          grep -q '登录参数不完整' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go" || { echo "❌ 字段校验缺失，中止"; exit 1; }
           echo "✅ 基线补丁已全部应用（客户端 3 处 + 签到诊断标记 + 抓取保护 10 处 + 空指针守卫 + recover/字段校验）"
           # ---- 客户端补丁第 6 处（v14）：cloudpan189-api 的 pan_client.go 末尾追加
           #   EnableAppSessionFallback —— NewPanClient 造的网页 client 原本只带
@@ -271,9 +269,8 @@ jobs:
           cp -r "$APIDIR" "$RUNNER_TEMP/cloudpan-src/apilocal"
           chmod -R u+w "$RUNNER_TEMP/cloudpan-src/apilocal"
           cp "$RUNNER_TEMP/pan_client_work.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go"
+          # 注：app_login.go / login.go 已由基线段直接在 apilocal 内打补丁，此处不再覆盖
           grep -q 'RefreshCookieToken(appToken.SessionKey)' "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/pan_client.go" || { echo "❌ apilocal 内 pan_client.go 补丁缺失，中止"; exit 1; }
-          cp "$RUNNER_TEMP/app_login.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/app_login.go"
-          cp "$RUNNER_TEMP/login.go" "$RUNNER_TEMP/cloudpan-src/apilocal/cloudpan/login.go"
           (cd "$RUNNER_TEMP/cloudpan-src" && go mod edit -replace github.com/tickstep/cloudpan189-api=./apilocal && grep -q 'cloudpan189-api => ./apilocal' go.mod) || { echo "❌ go.mod replace 未生效，中止"; exit 1; }
           echo "✅ apilocal 已组建（pan_client/app_login/login 三文件均为补丁版）且 go.mod replace 已生效"
           echo "（历史断言保留）go.mod replace 已指向本地已补丁 api 源码"
