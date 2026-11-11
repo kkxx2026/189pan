@@ -41,9 +41,12 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v14.2：登录不再依赖网页用户信息接口）
+      - name: Build cloudpan189-go (v14.3：登录不再依赖网页用户信息接口）
+        shell: bash
         run: |
           set -e
+          set -x
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
           cd "$RUNNER_TEMP/cloudpan-src"
           # ---- 客户端补丁（对象：cloudpan189-go master 克隆件）
