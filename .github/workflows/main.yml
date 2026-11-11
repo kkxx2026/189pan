@@ -41,7 +41,7 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build cloudpan189-go (v12：签到动作自带诊断标记）
+      - name: Build cloudpan189-go (v13：客户端补丁不变，新增配置文件快照）
         run: |
           set -e
           git clone --depth 1 --branch master https://github.com/tickstep/cloudpan189-go.git "$RUNNER_TEMP/cloudpan-src"
@@ -202,6 +202,11 @@ jobs:
           # 并把脱敏日志尾带进记录的「签到日志」行——死在哪一关一趟看清，
           # 不再靠猜。
           # v12 只加一处观测（在 Build 步骤）：sign 动作开头无条件打印
+          # v13 新增：#16 的 sign diag 是 users=0/activeUID=0/skLen=0/ckLen=0
+          # ——签到进程看到的是一份空配置。于是 v13 直接把配置文件本身亮出来：
+          # 探头登录后、链式登录后各拍一张快照（只记个数与长度+文件字节数，
+          # 不记内容），并把链式登录原本丢进 /dev/null 的输出留档脱敏带进记录。
+          # 三个时点一比就知道登录状态死在哪一手：没落盘 / 落盘后被清 / 都在。
           # 「sign diag: users=.. activeUID=.. skLen=.. ckLen=..」——#15 实测
           # verbose 标记在 sign 进程里没出全，这一行不受 verbose 影响，
           # 出现与否直接区分「死在启动重登关口」还是「死在签到恢复判定」。）
@@ -218,10 +223,37 @@ jobs:
             fi
             sleep 5
           done
+          # v13 配置文件快照函数：只报个数/长度/字节数，绝不输出令牌内容
+          cfg_snapshot() {
+            python3 - "$CLOUD189_CONFIG_DIR/cloud189_config.json" <<'PYEOF_CFG'
+          import json, sys, os
+          p = sys.argv[1]
+          try:
+              raw = open(p, 'rb').read()
+          except FileNotFoundError:
+              print('cfgfile=MISSING'); sys.exit(0)
+          try:
+              cfg = json.loads(raw)
+          except Exception:
+              print('cfgfile=UNPARSEABLE size=%d' % len(raw)); sys.exit(0)
+          ul = cfg.get('userList') or []
+          sk = ck = 0
+          if ul:
+              sk = len((ul[0].get('appToken') or {}).get('sessionKey') or '')
+              ck = len((ul[0].get('webToken') or {}).get('cookieLoginUser') or '')
+          print('users=%d activeUID=%s skLen=%d ckLen=%d size=%d' % (len(ul), cfg.get('activeUID', 0), sk, ck, len(raw)))
+          PYEOF_CFG
+          }
+          CFG_AFTER_LOGIN=""
+          if [ "$LOGIN_OK" = "true" ]; then
+            CFG_AFTER_LOGIN=$(cfg_snapshot)
+          fi
           if [ "$LOGIN_OK" = "true" ]; then
             LOGIN_STATUS="登录成功"
+            CHAIN_LOGIN_LOG="$RUNNER_TEMP/chain-login.log"
+            CFG_BEFORE_SIGN=""
             for attempt in 1 2 3; do
-              "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > /dev/null 2>&1 && CLOUD189_VERBOSE=1 "$BIN" sign > "$SIGN_LOG" 2>&1 || true
+              "$BIN" login -username="$TYYP_USERNAME" -password="$TYYP_PSW" > "$CHAIN_LOGIN_LOG" 2>&1 && CFG_BEFORE_SIGN=$(cfg_snapshot) && CLOUD189_VERBOSE=1 "$BIN" sign > "$SIGN_LOG" 2>&1 || true
               cat "$SIGN_LOG" >> "$CHAIN_LOG"
               if grep -a -q -E "签到成功|今日已签到|签到失败" "$CHAIN_LOG"; then
                 break
@@ -263,6 +295,11 @@ jobs:
             fi
             DRAW1=$(grep -a -E "第1次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
             DRAW2=$(grep -a -E "第2次抽奖" "$RUNNER_TEMP/sign.log" | head -n 1)
+          fi
+          # v13：链式登录的输出尾（脱敏）——它此前被丢进 /dev/null，这次留档
+          CHAIN_LOGIN_TAIL=""
+          if [ -s "$RUNNER_TEMP/chain-login.log" ]; then
+            CHAIN_LOGIN_TAIL=$(tail -5 "$RUNNER_TEMP/chain-login.log" | tr '\n' ' ' | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-400)
           fi
           SIGN_DIAG=$(grep -a -m1 "sign diag:" "$RUNNER_TEMP/sign.log" | sed -E 's/[0-9a-fA-F]{24,}/***/g; s/[0-9]{7,}/***/g' | cut -c1-200)
           # v11 诊断：签到进程的 verbose 日志尾（脱敏）带进记录，一趟看清死点
@@ -310,6 +347,15 @@ jobs:
             fi
             if [ -n "$SIGN_DIAG" ]; then
               echo "- **签到诊断**: $SIGN_DIAG"
+            fi
+            if [ -n "$CFG_AFTER_LOGIN" ]; then
+              echo "- **登录后配置**: $CFG_AFTER_LOGIN"
+            fi
+            if [ -n "$CFG_BEFORE_SIGN" ]; then
+              echo "- **签到前配置**: $CFG_BEFORE_SIGN"
+            fi
+            if [ -n "$CHAIN_LOGIN_TAIL" ]; then
+              echo "- **链式登录输出**: $CHAIN_LOGIN_TAIL"
             fi
             if [ -n "$SIGN_TAIL" ]; then
               echo "- **签到日志**: $SIGN_TAIL"
